@@ -720,7 +720,15 @@ if result:
     m3.metric("Mean residual (km)", f"{gsum['mean_residual_km']:.1f}")
     m4.metric("Max residual (km)", f"{gsum['max_residual_km']:.1f}")
 
-    if result["full_match_df"] is not None:
+    if len(result["records"]) == 0:
+        st.warning(
+            "No features were extracted from the map, so there's nothing to crosscheck or map. "
+            "This usually means the legend-swatch RGB values and/or tolerance in step 2 didn't match "
+            "any pixels/paths on the uploaded map, or an exclude region/boundary filtered everything "
+            "out. Check the 'Extracted features (table)' section below (it will be empty) and adjust "
+            "step 2's feature classes, then re-run."
+        )
+    elif result["full_match_df"] is not None and not result["full_match_df"].empty:
         import plotly.express as px
         counts = result["full_match_df"]["match_type"].value_counts().reset_index()
         counts.columns = ["match_type", "count"]
