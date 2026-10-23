@@ -282,12 +282,44 @@ st.header("3. Control points (georeferencing)")
 st.caption(
     "At least 3 (pixel, lon/lat) pairs for known locations on the map — named places, or (best) "
     "fields/facilities whose coordinates are already in your tracker export. Click the map above to "
-    "read off a pixel position, then type its known real-world longitude/latitude here."
+    "read off a pixel position, then use the form below to add it — no hand-typing pixel coordinates."
 )
+
+
+def _is_blank_cp_row(row) -> bool:
+    return (row.label == "" and row.pixel_x == 0.0 and row.pixel_y == 0.0
+            and row.lon == 0.0 and row.lat == 0.0)
+
+
 if st.session_state.last_click_px and HAS_CLICK_PICKER:
     cpx, cpy = st.session_state.last_click_px
-    st.caption(f"Last click was at pixel ({cpx:.1f}, {cpy:.1f}) — paste those into a new row's pixel_x / pixel_y.")
+    st.caption(f"Last click was at pixel ({cpx:.1f}, {cpy:.1f}).")
+    with st.form("add_control_point_form", clear_on_submit=True):
+        fc1, fc2, fc3 = st.columns([2, 1, 1])
+        new_label = fc1.text_input("Label (optional)", placeholder="e.g. Doha city center")
+        new_lon = fc2.number_input("Longitude", value=0.0, format="%.5f")
+        new_lat = fc3.number_input("Latitude", value=0.0, format="%.5f")
+        added = st.form_submit_button("Add this pixel as a control point")
+    if added:
+        new_row = pd.DataFrame([{
+            "label": new_label, "pixel_x": cpx, "pixel_y": cpy, "lon": new_lon, "lat": new_lat,
+        }])
+        existing = st.session_state.control_points
+        if len(existing) == 1 and _is_blank_cp_row(existing.iloc[0]):
+            st.session_state.control_points = new_row
+        else:
+            st.session_state.control_points = pd.concat([existing, new_row], ignore_index=True)
+        st.success(
+            f"Added control point '{new_label or '(unlabeled)'}' at pixel ({cpx:.1f}, {cpy:.1f}), "
+            f"({new_lon:.5f}, {new_lat:.5f})."
+        )
+elif HAS_CLICK_PICKER:
+    st.caption("Click the map preview above to set the pixel position for your next control point.")
 
+st.caption(
+    "The table below still supports manual edits/deletes — if you hand-type into it, commit each "
+    "cell (press Tab/Enter) before clicking the map again, or an uncommitted edit can be lost on rerun."
+)
 st.session_state.control_points = st.data_editor(
     st.session_state.control_points, num_rows="dynamic", use_container_width=True,
     column_config={
