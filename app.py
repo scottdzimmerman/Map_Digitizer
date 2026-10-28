@@ -255,8 +255,8 @@ st.caption(
     "Turns an infrastructure map (PDF or image) into georeferenced WGS84 features and, "
     "optionally, a crosscheck against a GOGET (or any) tracker export — following the same "
     "config-driven procedure as the manual worked examples (assess → extract → OCR → "
-    "georeference → sanity-check → crosscheck → report). No AI extraction calls: every "
-    "number below is something you read off the map once, same as the manual procedure."
+    "georeference → sanity-check → crosscheck → report). Every number below"
+    "is something you read off the map once, same as the manual procedure."
 )
 
 if "control_points" not in st.session_state:
@@ -399,7 +399,7 @@ feature_type = {
 }[feature_type_label]
 
 st.caption(
-    "One row per legend category (e.g. 'Gas Field' vs 'Oil Field'). Sample the fill color from a "
+    "Sample the fill color from a field or "
     "legend swatch on the map — click it above, then copy the reported RGB in here."
 )
 st.session_state.feature_classes = st.data_editor(
@@ -912,28 +912,37 @@ if run_clicked:
             matches = crosscheck_features(records, tracker_df, cfg.crosscheck)
             cols_ = cfg.crosscheck.columns
 
-            # Sanity check: if every extracted feature is far from *all* tracker
-            # records, the two datasets probably aren't describing the same place
-            # on Earth — almost always a sign the control points' lon/lat were
-            # swapped or mistyped, not a crosscheck/matching bug.
+            # Sanity check: if the extracted centroid is nowhere near ANY tracker
+            # record, the two datasets probably aren't describing the same place on
+            # Earth — almost always a sign the control points' lon/lat were swapped
+            # or mistyped, not a crosscheck/matching bug. We deliberately compare
+            # against the *nearest* tracker record rather than the tracker file's
+            # own overall centroid: a tracker export can legitimately span several
+            # disconnected regions (e.g. Peninsular Malaysia + Sarawak + Sabah,
+            # split by the South China Sea), which would drag a naive mean-of-all
+            # centroid far out over open water even when every coordinate is
+            # correct and the map matches one of those regions exactly.
             valid_tracker = tracker_df.dropna(subset=[cols_.lat, cols_.lon])
             if len(records) and len(valid_tracker):
                 rec_lon = sum(r["longitude"] for r in records) / len(records)
                 rec_lat = sum(r["latitude"] for r in records) / len(records)
-                trk_lon = valid_tracker[cols_.lon].astype(float).mean()
-                trk_lat = valid_tracker[cols_.lat].astype(float).mean()
-                centroid_gap_km = haversine_km(rec_lon, rec_lat, trk_lon, trk_lat)
-                if centroid_gap_km > 300:
+                tracker_lons = valid_tracker[cols_.lon].astype(float).tolist()
+                tracker_lats = valid_tracker[cols_.lat].astype(float).tolist()
+                nearest_km = min(
+                    haversine_km(rec_lon, rec_lat, lon, lat)
+                    for lon, lat in zip(tracker_lons, tracker_lats)
+                )
+                if nearest_km > 300:
                     location_warning = (
-                        f"Extracted features are centered ~{centroid_gap_km:,.0f} km from the tracker "
-                        f"file's own records (extracted centroid: {rec_lon:.2f}, {rec_lat:.2f} vs. tracker "
-                        f"centroid: {trk_lon:.2f}, {trk_lat:.2f}). That's too far for this to be the right "
-                        "place, which almost always means a control point's longitude/latitude got "
-                        "swapped or mistyped in step 3 — swapping lon ~25 and lat ~52 for Qatar-area control "
-                        "points, for instance, would land the whole map in Belarus instead. Every feature "
-                        "will show as 'No confident match' until this is fixed, regardless of whether the "
-                        "extraction itself is correct. Check the control points table's lon/lat columns "
-                        "against the real-world coordinates you meant to enter, then re-run."
+                        f"Extracted features are centered ~{nearest_km:,.0f} km from the CLOSEST "
+                        f"tracker record (extracted centroid: {rec_lon:.2f}, {rec_lat:.2f}). That's too "
+                        "far for this to be the right place, which almost always means a control point's "
+                        "longitude/latitude got swapped or mistyped in step 3 — swapping lon ~25 and lat "
+                        "~52 for Qatar-area control points, for instance, would land the whole map in "
+                        "Belarus instead. Every feature will show as 'No confident match' until this is "
+                        "fixed, regardless of whether the extraction itself is correct. Check the control "
+                        "points table's lon/lat columns against the real-world coordinates you meant to "
+                        "enter, then re-run."
                     )
             full_rows, missing_rows = [], []
             for rec, m in zip(records, matches):
