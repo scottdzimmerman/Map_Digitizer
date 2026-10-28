@@ -38,6 +38,7 @@ from map_digitizer.georeference import fit_georeference, choose_best_degree
 from map_digitizer.geometry import polygon_from_pixel_points, linestring_from_pixel_points, point_from_pixel
 from map_digitizer.sanity import filter_by_boundary
 from map_digitizer.crosscheck import crosscheck_features, load_tracker_csv, find_missing_tracker_geometry
+from map_digitizer.geo_utils import haversine_km, likely_swapped_lonlat
 from map_digitizer.report_excel import build_extraction_workbook, build_crosscheck_workbook
 from map_digitizer.report_html import build_leaflet_map
 
@@ -46,6 +47,13 @@ try:
     HAS_CLICK_PICKER = True
 except ImportError:
     HAS_CLICK_PICKER = False
+
+try:
+    import folium
+    from streamlit_folium import st_folium
+    HAS_FOLIUM = True
+except ImportError:
+    HAS_FOLIUM = False
 
 st.set_page_config(page_title="GEM Map Digitizer", layout="wide")
 
@@ -63,6 +71,133 @@ MATCH_COLORS = {
     "nearby": "#fee08b",
     "no confident match": "#d73027",
 }
+
+# Rough (min_lon, min_lat, max_lon, max_lat) presets for the "expected region"
+# check -- just good enough to catch a swapped lon/lat column, not survey
+# boundaries; deliberately generous at the margins. "Custom" / "Skip" are
+# added to this list in the UI itself. Country list follows GEM's own
+# oil & gas country coverage; sub-regions follow the UN geoscheme.
+COUNTRY_BBOXES = {
+    "United States": (-180.0, 18.0, -65.0, 72.0),
+    "Canada": (-141.0, 41.0, -52.0, 84.0),
+    "Russia": (19.0, 41.0, 180.0, 82.0),
+    "United Kingdom": (-8.6, 49.8, 1.8, 60.9),
+    "Colombia": (-79.0, -4.3, -66.8, 12.5),
+    "Nigeria": (2.6, 4.2, 14.7, 13.9),
+    "China": (73.0, 18.0, 135.0, 53.5),
+    "Mexico": (-118.4, 14.5, -86.7, 32.7),
+    "Argentina": (-73.6, -55.1, -53.6, -21.8),
+    "Australia": (112.9, -43.7, 153.7, -10.6),
+    "Netherlands": (3.3, 50.7, 7.3, 53.6),
+    "Brazil": (-74.0, -33.8, -34.8, 5.3),
+    "Norway": (4.5, 57.9, 31.3, 71.2),
+    "Venezuela": (-73.4, 0.6, -59.8, 12.2),
+    "Poland": (14.1, 49.0, 24.2, 54.9),
+    "Iran": (44.0, 25.0, 63.4, 39.8),
+    "Egypt": (24.7, 22.0, 36.9, 31.7),
+    "Ecuador": (-92.0, -5.0, -75.0, 1.5),
+    "Indonesia": (95.0, -11.0, 141.0, 6.0),
+    "Malaysia": (99.5, 0.8, 119.5, 7.5),
+    "Angola": (11.6, -18.1, 24.1, -4.3),
+    "Romania": (20.2, 43.6, 29.7, 48.3),
+    "Iraq": (38.8, 29.0, 48.6, 37.4),
+    "Algeria": (-8.7, 18.9, 12.0, 37.1),
+    "Germany": (5.9, 47.3, 15.0, 55.1),
+    "Libya": (9.3, 19.5, 25.2, 33.2),
+    "Kazakhstan": (46.5, 40.6, 87.3, 55.4),
+    "United Arab Emirates": (51.0, 22.5, 56.4, 26.1),
+    "Thailand": (97.3, 5.6, 105.6, 20.5),
+    "Oman": (52.0, 16.6, 59.8, 26.4),
+    "Pakistan": (60.9, 23.6, 77.8, 37.1),
+    "Italy": (6.6, 35.5, 18.5, 47.1),
+    "Trinidad and Tobago": (-62.2, 9.8, -60.3, 11.5),
+    "Saudi Arabia": (34.5, 16.0, 55.7, 32.2),
+    "Kuwait": (46.5, 28.5, 48.6, 30.1),
+    "Qatar": (50.5, 24.4, 51.7, 26.2),
+    "Vietnam": (102.1, 8.4, 109.5, 23.4),
+    "Denmark": (8.0, 54.5, 15.5, 58.0),
+    "Syria": (35.6, 32.2, 42.4, 37.3),
+    "Guyana": (-61.4, 1.1, -56.5, 8.6),
+    "Turkmenistan": (52.4, 35.1, 66.7, 42.8),
+    "Azerbaijan": (44.7, 38.3, 50.6, 41.9),
+    "Tanzania": (29.3, -11.8, 40.5, -0.9),
+    "India": (68.1, 6.5, 97.4, 35.5),
+    "Uzbekistan": (55.9, 37.1, 73.1, 45.6),
+    "Republic of the Congo": (11.1, -5.0, 18.6, 3.7),
+    "Ukraine": (22.1, 44.3, 40.2, 52.4),
+    "Ireland": (-10.5, 51.4, -5.9, 55.4),
+    "Israel": (34.2, 29.4, 35.9, 33.4),
+    "Bolivia": (-69.6, -23.0, -57.5, -9.6),
+    "Brunei": (114.0, 4.0, 115.4, 5.1),
+    "Chad": (13.4, 7.4, 24.0, 23.5),
+    "Mozambique": (30.2, -26.9, 40.9, -10.5),
+    "Peru": (-81.4, -18.4, -68.7, 0.0),
+    "Türkiye": (25.6, 35.8, 44.8, 42.1),
+    "Cuba": (-85.0, 19.8, -74.1, 23.3),
+    "Bangladesh": (88.0, 20.6, 92.7, 26.6),
+    "Côte d'Ivoire": (-8.6, 4.3, -2.5, 10.7),
+    "Namibia": (11.7, -29.0, 25.3, -16.9),
+    "New Zealand": (166.3, -47.4, 178.6, -34.4),
+    "Barbados": (-60.0, 12.8, -59.2, 13.4),
+    "Suriname": (-58.1, 1.8, -54.0, 6.0),
+    "Cyprus": (32.2, 34.5, 34.7, 35.7),
+    "South Sudan": (24.1, 3.4, 35.9, 12.3),
+    "Tunisia": (7.5, 30.2, 11.6, 37.6),
+    "Austria": (9.5, 46.3, 17.2, 49.1),
+    "Ethiopia": (32.9, 3.4, 48.0, 14.9),
+    "Guatemala": (-92.3, 13.7, -88.2, 17.8),
+    "Mauritania": (-17.1, 14.7, -4.8, 27.3),
+    "Myanmar": (92.2, 9.8, 101.2, 28.5),
+    "Papua New Guinea": (140.8, -11.7, 155.6, -1.3),
+    "South Africa": (16.3, -34.9, 32.9, -22.1),
+    "Cameroon": (8.4, 1.6, 16.2, 13.1),
+    "Ghana": (-3.3, 4.7, 1.2, 11.2),
+    "Hungary": (16.1, 45.7, 22.9, 48.6),
+    "Bahrain": (50.2, 25.5, 50.9, 26.4),
+    "France": (-5.2, 41.3, 9.6, 51.1),
+    "Gabon": (8.7, -3.9, 14.5, 2.3),
+    "Kenya": (33.9, -4.7, 41.9, 5.0),
+    "Philippines": (116.9, 4.6, 126.6, 21.1),
+    "Senegal": (-17.5, 12.3, -11.3, 16.7),
+    "Timor-Leste": (124.0, -9.5, 127.3, -8.1),
+    "Uganda": (29.6, -1.5, 35.0, 4.2),
+    "Albania": (19.3, 39.6, 21.1, 42.7),
+    "Chile": (-75.8, -56.0, -66.4, -17.5),
+    "Grenada": (-62.0, 11.7, -61.3, 12.5),
+    "Japan": (122.9, 24.0, 153.9, 45.6),
+    "Jordan": (34.9, 29.2, 39.3, 33.4),
+    "Madagascar": (43.2, -25.6, 50.5, -11.9),
+    "Mongolia": (87.7, 41.6, 119.9, 52.2),
+    "Morocco": (-13.2, 27.6, -1.0, 35.9),
+    "Palestine": (34.2, 31.2, 35.6, 32.6),
+    "Spain": (-9.4, 35.9, 4.4, 43.8),
+    "Yemen": (42.5, 12.1, 54.0, 19.0),
+    "Zimbabwe": (25.2, -22.4, 33.1, -15.6),
+}
+
+SUBREGION_BBOXES = {
+    "Northern America": (-170.0, 15.0, -10.0, 84.0),
+    "Latin America and the Caribbean": (-118.0, -56.0, -34.0, 33.0),
+    "Northern Europe": (-25.0, 54.0, 32.0, 81.0),
+    "Eastern Europe": (12.0, 41.0, 180.0, 82.0),
+    "Western Europe": (-5.0, 45.0, 16.0, 54.0),
+    "Southern Europe": (-10.0, 34.0, 29.0, 47.0),
+    "Northern Africa": (-17.2, 18.9, 37.0, 38.0),
+    "Sub-Saharan Africa": (-18.0, -35.0, 52.0, 23.0),
+    "South-eastern Asia": (92.0, -11.0, 141.0, 23.0),
+    "Western Asia": (25.0, 12.0, 63.0, 43.0),
+    "Southern Asia": (60.0, 2.0, 98.0, 38.0),
+    "Eastern Asia": (73.0, 18.0, 154.0, 54.0),
+    "Central Asia": (46.0, 35.0, 88.0, 56.0),
+    "Australia and New Zealand": (112.0, -48.0, 179.0, -10.0),
+    "Melanesia": (140.0, -22.0, 180.0, 0.0),
+}
+
+REGION_BBOX_PRESETS = {}
+for _name, _bbox in COUNTRY_BBOXES.items():
+    REGION_BBOX_PRESETS[f"Country: {_name}"] = _bbox
+for _name, _bbox in SUBREGION_BBOXES.items():
+    REGION_BBOX_PRESETS[f"Region: {_name}"] = _bbox
 
 FONT_DIR = os.path.join(os.path.dirname(__file__), "assets", "fonts")
 WORKDIR = Path(tempfile.gettempdir()) / "map_digitizer_app"
@@ -140,6 +275,10 @@ if "last_click_px" not in st.session_state:
     st.session_state.last_click_px = None
 if "run_result" not in st.session_state:
     st.session_state.run_result = None
+if "region_bbox" not in st.session_state:
+    st.session_state.region_bbox = None
+if "osm_click_lonlat" not in st.session_state:
+    st.session_state.osm_click_lonlat = None
 
 # ---------------------------------------------------------------------------
 # 1. Upload the map
@@ -282,7 +421,8 @@ st.header("3. Control points (georeferencing)")
 st.caption(
     "At least 3 (pixel, lon/lat) pairs for known locations on the map — named places, or (best) "
     "fields/facilities whose coordinates are already in your tracker export. Click the map above to "
-    "read off a pixel position, then use the form below to add it — no hand-typing pixel coordinates."
+    "read off a pixel position, then pick (or type) the real-world location below — no hand-typing "
+    "pixel coordinates, and no need to leave this page to look up a lon/lat on Google Maps."
 )
 
 
@@ -291,16 +431,93 @@ def _is_blank_cp_row(row) -> bool:
             and row.lon == 0.0 and row.lat == 0.0)
 
 
+# --- 3a. Expected region -- protects against a swapped lon/lat column ---
+st.subheader("Expected region")
+st.caption(
+    "Swapping longitude and latitude is the single most common control-point mistake, and it produces "
+    "no error on its own — just a map that silently lands nowhere near the real place. Pick roughly "
+    "where this map covers and any control point that lands outside it (but would land inside it if "
+    "lon/lat were swapped) gets flagged immediately, instead of surfacing later as a baffling 'no "
+    "confident match' crosscheck or a QA map centered on the wrong continent."
+)
+region_choice = st.selectbox(
+    "Country / region",
+    ["Skip (no check)", "Custom bounding box"] + list(REGION_BBOX_PRESETS.keys()),
+    key="region_choice",
+    help="Bounding boxes are deliberately generous at the margins -- they only need to be tight "
+         "enough to catch a control point that's wildly off (e.g. lon/lat swapped), not precise "
+         "survey boundaries.",
+)
+if region_choice == "Skip (no check)":
+    st.session_state.region_bbox = None
+elif region_choice == "Custom bounding box":
+    rb1, rb2, rb3, rb4 = st.columns(4)
+    r_min_lon = rb1.number_input("min lon", value=-10.0, format="%.2f", key="region_min_lon")
+    r_min_lat = rb2.number_input("min lat", value=-10.0, format="%.2f", key="region_min_lat")
+    r_max_lon = rb3.number_input("max lon", value=10.0, format="%.2f", key="region_max_lon")
+    r_max_lat = rb4.number_input("max lat", value=10.0, format="%.2f", key="region_max_lat")
+    st.session_state.region_bbox = (r_min_lon, r_min_lat, r_max_lon, r_max_lat)
+else:
+    st.session_state.region_bbox = REGION_BBOX_PRESETS[region_choice]
+    st.caption(f"Using preset bounding box: {st.session_state.region_bbox}")
+
+# --- 3b. Pick the real-world location: an embedded OSM map, click to set lon/lat ---
 if st.session_state.last_click_px and HAS_CLICK_PICKER:
     cpx, cpy = st.session_state.last_click_px
-    st.caption(f"Last click was at pixel ({cpx:.1f}, {cpy:.1f}).")
+    st.caption(f"Last click on the map preview above was at pixel ({cpx:.1f}, {cpy:.1f}).")
+
+    osm_col, info_col = st.columns([3, 2])
+    with osm_col:
+        if HAS_FOLIUM:
+            bbox = st.session_state.region_bbox
+            if bbox:
+                center = [(bbox[1] + bbox[3]) / 2, (bbox[0] + bbox[2]) / 2]
+                zoom = 6
+            else:
+                center = [20.0, 10.0]
+                zoom = 2
+            osm_map = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap")
+            if bbox:
+                folium.Rectangle(
+                    bounds=[[bbox[1], bbox[0]], [bbox[3], bbox[2]]],
+                    color="#016B83", weight=2, fill=False,
+                    tooltip="Expected region",
+                ).add_to(osm_map)
+            if st.session_state.osm_click_lonlat:
+                clon, clat = st.session_state.osm_click_lonlat
+                folium.CircleMarker(
+                    location=[clat, clon], radius=7, color="#111111", weight=2,
+                    fill=True, fill_color="#ffeb3b", fill_opacity=0.95,
+                ).add_to(osm_map)
+            map_data = st_folium(osm_map, height=320, use_container_width=True, key="osm_picker")
+            if map_data and map_data.get("last_clicked"):
+                st.session_state.osm_click_lonlat = (
+                    map_data["last_clicked"]["lng"], map_data["last_clicked"]["lat"],
+                )
+                st.rerun()
+        else:
+            st.caption(
+                "Install `streamlit-folium` (and `folium`) to pick the real-world location by clicking "
+                "an embedded map here — for now, type the longitude/latitude manually in the form."
+            )
+    with info_col:
+        if st.session_state.osm_click_lonlat:
+            clon, clat = st.session_state.osm_click_lonlat
+            st.info(f"Last OSM click → lon {clon:.5f}, lat {clat:.5f}")
+        else:
+            st.caption("Click the map to the left to set this control point's real-world lon/lat.")
+
+    osm_default_lon = st.session_state.osm_click_lonlat[0] if st.session_state.osm_click_lonlat else 0.0
+    osm_default_lat = st.session_state.osm_click_lonlat[1] if st.session_state.osm_click_lonlat else 0.0
+
     with st.form("add_control_point_form", clear_on_submit=True):
         fc1, fc2, fc3 = st.columns([2, 1, 1])
         new_label = fc1.text_input("Label (optional)", placeholder="e.g. Doha city center")
-        new_lon = fc2.number_input("Longitude", value=0.0, format="%.5f")
-        new_lat = fc3.number_input("Latitude", value=0.0, format="%.5f")
+        new_lon = fc2.number_input("Longitude", value=osm_default_lon, format="%.5f")
+        new_lat = fc3.number_input("Latitude", value=osm_default_lat, format="%.5f")
         added = st.form_submit_button("Add this pixel as a control point")
     if added:
+        swapped_likely = likely_swapped_lonlat(new_lon, new_lat, st.session_state.region_bbox)
         new_row = pd.DataFrame([{
             "label": new_label, "pixel_x": cpx, "pixel_y": cpy, "lon": new_lon, "lat": new_lat,
         }])
@@ -309,10 +526,17 @@ if st.session_state.last_click_px and HAS_CLICK_PICKER:
             st.session_state.control_points = new_row
         else:
             st.session_state.control_points = pd.concat([existing, new_row], ignore_index=True)
-        st.success(
-            f"Added control point '{new_label or '(unlabeled)'}' at pixel ({cpx:.1f}, {cpy:.1f}), "
-            f"({new_lon:.5f}, {new_lat:.5f})."
-        )
+        if swapped_likely:
+            st.warning(
+                f"Added at ({new_lon:.5f}, {new_lat:.5f}) — but that's outside the expected region, "
+                f"while the SWAPPED values ({new_lat:.5f}, {new_lon:.5f}) would fall inside it. This was "
+                f"still added as entered; use ‘Swap lon/lat’ below if it really is reversed."
+            )
+        else:
+            st.success(
+                f"Added control point '{new_label or '(unlabeled)'}' at pixel ({cpx:.1f}, {cpy:.1f}), "
+                f"({new_lon:.5f}, {new_lat:.5f})."
+            )
 elif HAS_CLICK_PICKER:
     st.caption("Click the map preview above to set the pixel position for your next control point.")
 
@@ -331,6 +555,39 @@ st.session_state.control_points = st.data_editor(
     },
     key="control_points_editor",
 )
+
+# --- 3c. Scan the whole table for likely swapped lon/lat, with a one-click fix ---
+cp_df = st.session_state.control_points
+flagged_idx = []
+if st.session_state.region_bbox is not None and len(cp_df):
+    for i, row in cp_df.iterrows():
+        if _is_blank_cp_row(row):
+            continue
+        if likely_swapped_lonlat(float(row.lon), float(row.lat), st.session_state.region_bbox):
+            flagged_idx.append(i)
+
+if flagged_idx:
+    labels = ", ".join(str(cp_df.loc[i, "label"]) or f"row {i}" for i in flagged_idx)
+    st.error(
+        f"{len(flagged_idx)} control point(s) look reversed against the expected region: {labels}. "
+        "These will make georeferencing fail outright (or silently point the whole map at the wrong "
+        "place) if left as-is."
+    )
+    if st.button("🔁 Swap lon/lat for just the flagged row(s)"):
+        fixed = st.session_state.control_points.copy()
+        for i in flagged_idx:
+            fixed.loc[i, "lon"], fixed.loc[i, "lat"] = fixed.loc[i, "lat"], fixed.loc[i, "lon"]
+        st.session_state.control_points = fixed
+        st.rerun()
+elif st.session_state.region_bbox is not None and len(cp_df) and not all(_is_blank_cp_row(r) for _, r in cp_df.iterrows()):
+    st.caption("No control points look reversed against the expected region.")
+
+swap_col, _ = st.columns([1, 3])
+if swap_col.button("🔁 Swap lon ⇄ lat for ALL rows"):
+    fixed = st.session_state.control_points.copy()
+    fixed["lon"], fixed["lat"] = fixed["lat"].copy(), fixed["lon"].copy()
+    st.session_state.control_points = fixed
+    st.rerun()
 
 gc1, gc2 = st.columns(2)
 degree_choice = gc1.selectbox("Georeference fit", ["Auto (cross-validated)", "Affine (degree 1)", "Quadratic (degree 2)"])
@@ -513,7 +770,8 @@ def build_config() -> MapConfig:
         source_kind=source_kind or SourceKind.UNKNOWN,
         feature_classes=feature_classes,
         georeference=GeoreferenceConfig(control_points=control_points, degree=degree,
-                                         max_acceptable_residual_km=(max_residual or None)),
+                                         max_acceptable_residual_km=(max_residual or None),
+                                         region_bbox=st.session_state.region_bbox),
         output_dir=str(WORKDIR / "output"),
         exclude_regions_px=exclude_regions,
         shape_filter=ShapeFilter(min_area_px=min_area_px, aspect_ratio_max=aspect_ratio_max,
@@ -582,7 +840,8 @@ if run_clicked:
         if degree is None:
             degree = choose_best_degree(cfg.georeference.control_points)
         georef = fit_georeference(cfg.georeference.control_points, degree=degree,
-                                   max_acceptable_residual_km=cfg.georeference.max_acceptable_residual_km)
+                                   max_acceptable_residual_km=cfg.georeference.max_acceptable_residual_km,
+                                   region_bbox=cfg.georeference.region_bbox)
         advance(f"Georeferenced (degree {georef.degree}, mean residual {georef.mean_residual_km:.1f} km, "
                 f"max {georef.max_residual_km:.1f} km)")
 
@@ -647,10 +906,35 @@ if run_clicked:
 
         full_match_df = missing_from_tracker_df = missing_geometry_df = None
         crosscheck_xlsx = None
+        location_warning = None
         if cfg.crosscheck is not None:
             tracker_df = load_tracker_csv(cfg.crosscheck.tracker_csv_path, cfg.crosscheck.columns)
             matches = crosscheck_features(records, tracker_df, cfg.crosscheck)
             cols_ = cfg.crosscheck.columns
+
+            # Sanity check: if every extracted feature is far from *all* tracker
+            # records, the two datasets probably aren't describing the same place
+            # on Earth — almost always a sign the control points' lon/lat were
+            # swapped or mistyped, not a crosscheck/matching bug.
+            valid_tracker = tracker_df.dropna(subset=[cols_.lat, cols_.lon])
+            if len(records) and len(valid_tracker):
+                rec_lon = sum(r["longitude"] for r in records) / len(records)
+                rec_lat = sum(r["latitude"] for r in records) / len(records)
+                trk_lon = valid_tracker[cols_.lon].astype(float).mean()
+                trk_lat = valid_tracker[cols_.lat].astype(float).mean()
+                centroid_gap_km = haversine_km(rec_lon, rec_lat, trk_lon, trk_lat)
+                if centroid_gap_km > 300:
+                    location_warning = (
+                        f"Extracted features are centered ~{centroid_gap_km:,.0f} km from the tracker "
+                        f"file's own records (extracted centroid: {rec_lon:.2f}, {rec_lat:.2f} vs. tracker "
+                        f"centroid: {trk_lon:.2f}, {trk_lat:.2f}). That's too far for this to be the right "
+                        "place, which almost always means a control point's longitude/latitude got "
+                        "swapped or mistyped in step 3 — swapping lon ~25 and lat ~52 for Qatar-area control "
+                        "points, for instance, would land the whole map in Belarus instead. Every feature "
+                        "will show as 'No confident match' until this is fixed, regardless of whether the "
+                        "extraction itself is correct. Check the control points table's lon/lat columns "
+                        "against the real-world coordinates you meant to enter, then re-run."
+                    )
             full_rows, missing_rows = [], []
             for rec, m in zip(records, matches):
                 row = {
@@ -701,6 +985,7 @@ if run_clicked:
             "crosscheck_xlsx": str(crosscheck_xlsx) if crosscheck_xlsx else None,
             "full_match_df": full_match_df, "html_path": str(html_path),
             "config_yaml_path": str(config_yaml_path) if config_yaml_path else None,
+            "location_warning": location_warning,
         }
     except Exception as e:
         log.update(label="Pipeline failed", state="error")
@@ -713,6 +998,8 @@ if run_clicked:
 result = st.session_state.run_result
 if result:
     st.header("Results")
+    if result.get("location_warning"):
+        st.error(result["location_warning"])
     gsum = result["georef_summary"]
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Features extracted", len(result["records"]))

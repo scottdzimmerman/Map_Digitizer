@@ -97,6 +97,7 @@ class GeoreferenceConfig:
     control_points: list  # list[ControlPoint]
     degree: int = 1  # 1 = affine, 2 = quadratic (2nd-order polynomial)
     max_acceptable_residual_km: Optional[float] = None  # if set, drop_outliers() will iterate to this target
+    region_bbox: Optional[tuple] = None  # (min_lon, min_lat, max_lon, max_lat); catches swapped lon/lat control points
 
 
 @dataclass
@@ -206,6 +207,8 @@ def _dataclass_from_dict(cls, data):
     if cls is GeoreferenceConfig:
         d = dict(data)
         d["control_points"] = [_dataclass_from_dict(ControlPoint, cp) for cp in d["control_points"]]
+        if d.get("region_bbox"):
+            d["region_bbox"] = tuple(d["region_bbox"])
         return GeoreferenceConfig(**d)
     if cls is BoundaryConfig:
         d = dict(data)

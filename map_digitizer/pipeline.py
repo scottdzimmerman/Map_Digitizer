@@ -93,6 +93,7 @@ def run_pipeline(config: MapConfig, raster_image_path: str = None, page_index: i
         config.georeference.control_points,
         degree=degree,
         max_acceptable_residual_km=config.georeference.max_acceptable_residual_km,
+        region_bbox=config.georeference.region_bbox,
     )
     result.georef = georef
 

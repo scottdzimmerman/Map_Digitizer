@@ -32,3 +32,22 @@ def bbox_gap(box_a: tuple, box_b: tuple) -> float:
 def point_in_bbox(x: float, y: float, box: tuple) -> bool:
     x0, y0, x1, y1 = box
     return x0 <= x <= x1 and y0 <= y <= y1
+
+
+def likely_swapped_lonlat(lon: float, lat: float, bbox: tuple) -> bool:
+    """
+    True if (lon, lat) falls outside the given (min_lon, min_lat, max_lon,
+    max_lat) bbox, but swapping to (lat, lon) would fall inside it -- a
+    strong, cheap signal that a control point's lon/lat columns got swapped
+    when someone typed them in (the single most common georeferencing bug:
+    a point like lon=52, lat=25 for a Gulf-area map typed backwards as
+    lon=25, lat=52 silently lands the whole map in Belarus instead).
+
+    bbox may be None, in which case this always returns False (no check
+    configured).
+    """
+    if bbox is None:
+        return False
+    if point_in_bbox(lon, lat, bbox):
+        return False
+    return point_in_bbox(lat, lon, bbox)

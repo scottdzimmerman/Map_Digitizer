@@ -1,5 +1,7 @@
 streamlit>=1.33
 streamlit-image-coordinates>=0.1.6
+streamlit-folium>=0.21
+folium>=0.15
 plotly>=5.20
 pandas>=2.0
 pymupdf>=1.24

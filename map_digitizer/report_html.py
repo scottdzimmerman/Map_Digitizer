@@ -142,6 +142,20 @@ L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
     maxZoom: 18
 }}).addTo(map);
 
+// Click-to-mark: drop a visible dot wherever the map is clicked, showing the
+// exact lat/lon under the cursor -- handy for sanity-checking a feature's
+// real-world position or reading off a coordinate for a new control point.
+var _clickMarker = null;
+map.on('click', function(e) {{
+    if (_clickMarker) {{ map.removeLayer(_clickMarker); }}
+    _clickMarker = L.circleMarker(e.latlng, {{
+        radius: 7, color: '#111111', weight: 2, fillColor: '#ffeb3b', fillOpacity: 0.95
+    }}).addTo(map);
+    _clickMarker.bindPopup(
+        'Lat: ' + e.latlng.lat.toFixed(5) + '<br>Lon: ' + e.latlng.lng.toFixed(5)
+    ).openPopup();
+}});
+
 {"".join(layers_js)}
 
 var overlays = {{ {", ".join(controls_js)} }};

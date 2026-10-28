@@ -20,7 +20,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .geo_utils import haversine_km
+from .geo_utils import haversine_km, likely_swapped_lonlat
 
 
 @dataclass
@@ -60,7 +60,8 @@ def _apply(coef: np.ndarray, a: float, b: float, degree: int) -> float:
 
 def fit_georeference(control_points: list, degree: int = 1,
                       max_acceptable_residual_km: Optional[float] = None,
-                      max_drop_fraction: float = 0.25) -> GeoreferenceResult:
+                      max_drop_fraction: float = 0.25,
+                      region_bbox: Optional[tuple] = None) -> GeoreferenceResult:
     """
     Fit a pixel<->lon/lat transform from a list of config.ControlPoint.
 
@@ -69,6 +70,15 @@ def fit_georeference(control_points: list, degree: int = 1,
     is at/under the target or max_drop_fraction of the original points have
     been dropped (whichever comes first) — mirroring the procedure's
     "drop the outsized-residual point, then refit" step.
+
+    region_bbox, if given, is an expected (min_lon, min_lat, max_lon,
+    max_lat) for every control point's real-world location — e.g. roughly
+    the country/region the map covers. Any control point whose (lon, lat)
+    falls outside this box but whose (lat, lon) would fall inside it is very
+    likely a swapped-column typo, and is reported as a loud ValueError up
+    front rather than being silently fit into a garbage transform (this is
+    the single most common manual-entry bug in this stage — it produces no
+    error on its own, just a map that lands nowhere near the real place).
     """
     points = list(control_points)
     dropped = []
@@ -77,6 +87,16 @@ def fit_georeference(control_points: list, degree: int = 1,
 
     if n_original < 3:
         raise ValueError("Need at least 3 control points to fit a transform")
+
+    if region_bbox is not None:
+        suspects = [p for p in points if likely_swapped_lonlat(p.lon, p.lat, region_bbox)]
+        if suspects:
+            labels = ", ".join(f"'{p.label}' (lon={p.lon}, lat={p.lat})" for p in suspects)
+            raise ValueError(
+                f"{len(suspects)} control point(s) look like their lon/lat columns are swapped "
+                f"relative to region_bbox={region_bbox}: {labels}. Swap lon and lat for these points "
+                f"(or pass region_bbox=None to skip this check if the region really is correct)."
+            )
 
     while True:
         pxs = np.array([p.pixel_x for p in points], dtype=float)
